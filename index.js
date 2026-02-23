@@ -72,6 +72,19 @@ client.on(Events.MessageCreate, async message => {
                 const lines = text.split('\n').filter(line => line.trim() !== '');
                 let playerName = "NomInconnu";
 
+                const cleanName = (rawLine) => {
+                    let potentialName = rawLine
+                        .replace(/^(?:[a-zA-Z0-9]{1,3}\s*\)?\s*)/, '')
+                        .trim();
+
+                    if (potentialName.length <= 2) {
+                        potentialName = rawLine.replace(/^[^a-zA-Z0-9]*[a-zA-Z0-9]\s+/, '').trim();
+                    }
+
+                    potentialName = potentialName.replace(/^[^a-zA-Z0-9\[\]]+|[^a-zA-Z0-9\[\]]+$/g, '');
+                    return potentialName;
+                };
+
                 // On inclut les crochets dans le nom final de la guilde
                 let guildTag = guildMatch ? `[${guildMatch[1].trim()}]` : "[GuildeInconnue]";
 
@@ -83,19 +96,7 @@ client.on(Events.MessageCreate, async message => {
                         // Le nom du joueur se trouve généralement 1 ou 2 lignes au-dessus, on prend la première ligne non-vide significative
                         // On prend la ligne juste avant (ou 2 lignes avant si c'est du bruit comme "i")
                         for (let i = tagLineIndex - 1; i >= 0; i--) {
-                            // On nettoie la ligne des caractères parasites souvent générés par l'OCR
-                            let potentialName = lines[i]
-                                // Retire les motifs comme "fa)", "1)", "i " etc...
-                                .replace(/^(?:[a-zA-Z0-9]{1,3}\s*\)?\s*)/, '')
-                                .trim();
-
-                            // Si le motif de nettoyage a tout supprimé ou presque, on reprend la ligne d'origine pour enlever uniquement une lettre parasite ("y Nom" -> "Nom")
-                            if (potentialName.length <= 2) {
-                                potentialName = lines[i].replace(/^[^a-zA-Z0-9]*[a-zA-Z0-9]\s+/, '').trim();
-                            }
-
-                            // Dernier nettoyage pour retirer les symboles parasites au début et à la fin
-                            potentialName = potentialName.replace(/^[^a-zA-Z0-9\[\]]+|[^a-zA-Z0-9\[\]]+$/g, '');
+                            let potentialName = cleanName(lines[i]);
 
                             if (potentialName.length > 2) {
                                 playerName = potentialName;
@@ -108,7 +109,10 @@ client.on(Events.MessageCreate, async message => {
                     if (playerName === "NomInconnu" && guildMatch) {
                         // Si pas trouvé au dessus, on essaie de prendre le mot à côté du tag au cas où
                         const nameMatch = text.match(/\[[a-zA-Z0-9_-]+\]\s*([a-zA-Z0-9_\- ]+)/i);
-                        if (nameMatch) playerName = nameMatch[1].trim();
+                        if (nameMatch) {
+                            let potentialName = cleanName(nameMatch[1].trim());
+                            if (potentialName.length > 2) playerName = potentialName;
+                        }
                     }
 
                     // On cherche aussi le numéro de serveur (ex: #1061)
