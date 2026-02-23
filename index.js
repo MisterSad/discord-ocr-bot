@@ -12,7 +12,6 @@ const client = new Client({
     partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
-const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID; // The channel ID where the bot will listen
 
 client.once(Events.ClientReady, c => {
     console.log(`Ready! Logged in as ${c.user.tag}`);
@@ -22,8 +21,8 @@ client.on(Events.MessageCreate, async message => {
     // Ignore messages from bots
     if (message.author.bot) return;
 
-    // Only process messages in the target channel
-    if (TARGET_CHANNEL_ID && message.channel.id !== TARGET_CHANNEL_ID) return;
+    // Only process messages in channels named '✅-verification'
+    if (message.channel.name !== '✅-verification') return;
 
     // Check if the message has an image attachment
     if (message.attachments.size > 0) {
