@@ -35,6 +35,15 @@ client.on(Events.MessageCreate, async message => {
             try {
                 // Let the user know the bot is processing the image
                 const processingMsg = await message.reply('Processing image (OCR)...');
+                const messagesToDelete = [message, processingMsg];
+
+                const scheduleCleanup = () => {
+                    setTimeout(async () => {
+                        for (const msg of messagesToDelete) {
+                            try { await msg.delete(); } catch (e) { }
+                        }
+                    }, 10000); // 10 secondes pour lire le message avant suppression
+                };
 
                 // Perform OCR on the image URL
                 const { data: { text } } = await Tesseract.recognize(
@@ -75,7 +84,19 @@ client.on(Events.MessageCreate, async message => {
                         // On prend la ligne juste avant (ou 2 lignes avant si c'est du bruit comme "i")
                         for (let i = tagLineIndex - 1; i >= 0; i--) {
                             // On nettoie la ligne des caractères parasites souvent générés par l'OCR
-                            let potentialName = lines[i].replace(/^[a-zA-Z0-9\W]{1,3}\s*\)?\s*/, '').trim();
+                            let potentialName = lines[i]
+                                // Retire les motifs comme "fa)", "1)", "i " etc...
+                                .replace(/^(?:[a-zA-Z0-9]{1,3}\s*\)?\s*)/, '')
+                                .trim();
+
+                            // Si le motif de nettoyage a tout supprimé ou presque, on reprend la ligne d'origine pour enlever uniquement une lettre parasite ("y Nom" -> "Nom")
+                            if (potentialName.length <= 2) {
+                                potentialName = lines[i].replace(/^[^a-zA-Z0-9]*[a-zA-Z0-9]\s+/, '').trim();
+                            }
+
+                            // Dernier nettoyage pour retirer les symboles parasites au début et à la fin
+                            potentialName = potentialName.replace(/^[^a-zA-Z0-9\[\]]+|[^a-zA-Z0-9\[\]]+$/g, '');
+
                             if (potentialName.length > 2) {
                                 playerName = potentialName;
                                 break;
@@ -114,7 +135,8 @@ client.on(Events.MessageCreate, async message => {
                                     color: 'Random', // Assign a random color
                                     reason: 'Created automatically by the OCR bot',
                                 });
-                                await message.channel.send(`The role **${guildTag}** was created because it didn't exist.`);
+                                const roleMsg = await message.channel.send(`The role **${guildTag}** was created because it didn't exist.`);
+                                messagesToDelete.push(roleMsg);
                             }
 
                             // Assign the role to the user
@@ -125,23 +147,32 @@ client.on(Events.MessageCreate, async message => {
                             // Discord has a 32 character limit on nicknames
                             await member.setNickname(newNickname.substring(0, 32));
 
-                            await message.reply(`🎉 Success! The role **${guildTag}** has been assigned to you and your nickname is now **${newNickname}**.`);
+                            const successMsg = await message.reply(`🎉 Success! The role **${guildTag}** has been assigned to you and your nickname is now **${newNickname}**.`);
+                            messagesToDelete.push(successMsg);
 
                         } catch (actionError) {
                             console.error("Erreur d'attribution Discord:", actionError);
-                            await message.reply(`❌ Extraction succeeded, but a permission error prevents me from updating your role or nickname. Please ensure my role is placed **highest** in the server hierarchy and I have "Manage Roles" and "Manage Nicknames" permissions.`);
+                            const errorMsg = await message.reply(`❌ Extraction succeeded, but a permission error prevents me from updating your role or nickname. Please ensure my role is placed **highest** in the server hierarchy and I have "Manage Roles" and "Manage Nicknames" permissions.`);
+                            messagesToDelete.push(errorMsg);
                         }
                     } else {
-                        await message.reply("Could not find member information.");
+                        const errorMsg = await message.reply("Could not find member information.");
+                        messagesToDelete.push(errorMsg);
                     }
 
                 } else {
                     await processingMsg.edit(`❌ Text extracted, but format not recognized.\nRaw text received:\n\`\`\`text\n${text}\n\`\`\`\n\nPlease ensure the image contains the expected format.`);
                 }
 
+                scheduleCleanup();
+
             } catch (error) {
                 console.error("Error processing image:", error);
-                message.reply('An error occurred while analyzing the image.');
+                const catchMsg = await message.reply('An error occurred while analyzing the image.');
+                setTimeout(async () => {
+                    try { await message.delete(); } catch (e) { }
+                    try { await catchMsg.delete(); } catch (e) { }
+                }, 10000);
             }
         }
     }
