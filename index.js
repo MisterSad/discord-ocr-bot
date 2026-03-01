@@ -40,7 +40,11 @@ client.on(Events.MessageCreate, async message => {
                 const scheduleCleanup = () => {
                     setTimeout(async () => {
                         for (const msg of messagesToDelete) {
-                            try { await msg.delete(); } catch (e) { }
+                            try {
+                                await msg.delete();
+                            } catch (e) {
+                                console.error(`Erreur lors de la suppression du message (ID: ${msg.id}):`, e.message);
+                            }
                         }
                     }, 10000); // 10 secondes pour lire le message avant suppression
                 };
@@ -64,64 +68,68 @@ client.on(Events.MessageCreate, async message => {
                 // ew Natalie
                 // iE J) il ¥ [GE] Galactic-Empire o}
 
-                // 1. Trouver le tag de la guilde (ex: [GE] Galactic-Empire)
-                const guildMatch = text.match(/\[([a-zA-Z0-9_-]+)\]/i);
+                // 1. Découpage du texte en lignes
+                const lines = text.split('\n').map(l => l.trim()).filter(line => line !== '');
 
-                // 2. Trouver le nom du joueur. Les pseudos OCR sont souvent sur la/les ligne(s) précédant le tag.
-                // Cherchons la ligne contenant le tag.
-                const lines = text.split('\n').filter(line => line.trim() !== '');
+                let guildTag = "[GuildeInconnue]";
                 let playerName = "NomInconnu";
+                let serverNumber = "";
 
-                const cleanName = (rawLine) => {
-                    let potentialName = rawLine
-                        .replace(/^(?:[a-zA-Z0-9]{1,3}\s*\)?\s*)/, '')
-                        .trim();
-
-                    if (potentialName.length <= 2) {
-                        potentialName = rawLine.replace(/^[^a-zA-Z0-9]*[a-zA-Z0-9]\s+/, '').trim();
+                // Trouver le tag de la guilde (ex: [GE] Galactic-Empire)
+                let tagLineIndex = -1;
+                for (let i = 0; i < lines.length; i++) {
+                    const match = lines[i].match(/\[([a-zA-Z0-9_-]+)\]/);
+                    if (match) {
+                        guildTag = `[${match[1].trim()}]`;
+                        tagLineIndex = i;
+                        break;
                     }
+                }
 
-                    potentialName = potentialName.replace(/^[^a-zA-Z0-9\[\]]+|[^a-zA-Z0-9\[\]]+$/g, '');
-                    return potentialName;
-                };
+                // 2. Trouver le nom du joueur (sur les lignes précédant le tag)
+                if (tagLineIndex !== -1) {
+                    for (let i = tagLineIndex - 1; i >= 0; i--) {
+                        let line = lines[i];
 
-                // On inclut les crochets dans le nom final de la guilde
-                let guildTag = guildMatch ? `[${guildMatch[1].trim()}]` : "[GuildeInconnue]";
+                        // Nettoyage : enlève les symboles de début et de fin
+                        line = line.replace(/^[^a-zA-Z0-9]+/, '').replace(/[^a-zA-Z0-9]+$/, '').trim();
 
-                if (guildMatch) {
-                    const cleanTag = guildMatch[1].trim();
-                    const tagLineIndex = lines.findIndex(line => line.includes(`[${cleanTag}]`));
+                        // Enlever une éventuelle lettre/icône isolée au début (ex : "i HawkTuah" -> "HawkTuah")
+                        const words = line.split(/\s+/);
+                        if (words.length > 1 && words[0].length <= 2) {
+                            words.shift();
+                            line = words.join(' ');
+                        }
 
-                    if (tagLineIndex > 0) {
-                        // Le nom du joueur se trouve généralement 1 ou 2 lignes au-dessus, on prend la première ligne non-vide significative
-                        // On prend la ligne juste avant (ou 2 lignes avant si c'est du bruit comme "i")
-                        for (let i = tagLineIndex - 1; i >= 0; i--) {
-                            let potentialName = cleanName(lines[i]);
+                        // Le mot "PROFILE" tout en haut ne doit pas être pris comme nom
+                        if (line.toUpperCase().includes('PROFILE')) continue;
 
-                            if (potentialName.length > 2) {
-                                playerName = potentialName;
-                                break;
-                            }
+                        if (line.length >= 3) {
+                            playerName = line;
+                            break;
                         }
                     }
+                }
 
-                    // On s'assure qu'on ne prend pas "Galactic-Empire" comme nom de joueur
-                    if (playerName === "NomInconnu" && guildMatch) {
-                        // Si pas trouvé au dessus, on essaie de prendre le mot à côté du tag au cas où
-                        const nameMatch = text.match(/\[[a-zA-Z0-9_-]+\]\s*([a-zA-Z0-9_\- ]+)/i);
-                        if (nameMatch) {
-                            let potentialName = cleanName(nameMatch[1].trim());
-                            if (potentialName.length > 2) playerName = potentialName;
-                        }
+                // Cas de secours au cas où l'OCR met le nom et le tag sur la même ligne
+                if (playerName === "NomInconnu" && tagLineIndex !== -1) {
+                    const line = lines[tagLineIndex];
+                    const matchBefore = line.match(/^([a-zA-Z0-9_-]+)\s*\[/);
+                    if (matchBefore && matchBefore[1].length >= 3) {
+                        playerName = matchBefore[1].trim();
                     }
+                }
 
-                    // On cherche aussi le numéro de serveur (ex: #1061)
-                    let serverNumber = "";
-                    const serverMatch = text.match(/#(\d+)/);
-                    if (serverMatch) {
-                        serverNumber = ` #${serverMatch[1]}`;
-                    }
+                // 3. Trouver le numéro de serveur (ex: #1061)
+                const serverMatch = text.match(/#(\d+)/);
+                if (serverMatch) {
+                    serverNumber = ` #${serverMatch[1]}`;
+                }
 
+                // Vérification si on a trouvé un tag de guilde pour continuer
+                const isGuildFound = tagLineIndex !== -1;
+
+                if (isGuildFound) {
                     await processingMsg.edit(`✅ Text extracted successfully:\n**Guild:** ${guildTag}\n**Player:** ${playerName}\n**Server:** ${serverNumber.trim() || "Not found"}\n\nAssigning role and modifying nickname...`);
 
                     const member = message.member;
@@ -129,14 +137,15 @@ client.on(Events.MessageCreate, async message => {
                     if (member) {
                         try {
                             // 1. Manage Role
-                            // Find the role in the guild
+                            // Toujours fetch les rôles d'abord pour éviter les problèmes de cache (si le rôle vient d'être créé ou modifié)
+                            await message.guild.roles.fetch();
                             let role = message.guild.roles.cache.find(r => r.name === guildTag);
 
                             if (!role) {
                                 // Create role if it doesn't exist
                                 role = await message.guild.roles.create({
                                     name: guildTag,
-                                    color: 'Random', // Assign a random color
+                                    color: Math.floor(Math.random() * 16777215), // Assigne une couleur aléatoire valide (0x000000 à 0xFFFFFF)
                                     reason: 'Created automatically by the OCR bot',
                                 });
                                 const roleMsg = await message.channel.send(`The role **${guildTag}** was created because it didn't exist.`);
@@ -156,7 +165,16 @@ client.on(Events.MessageCreate, async message => {
 
                         } catch (actionError) {
                             console.error("Erreur d'attribution Discord:", actionError);
-                            const errorMsg = await message.reply(`❌ Extraction succeeded, but a permission error prevents me from updating your role or nickname. Please ensure my role is placed **highest** in the server hierarchy and I have "Manage Roles" and "Manage Nicknames" permissions.`);
+
+                            let errorMessage = `❌ Extraction succeeded, but a permission error prevents me from updating your role or nickname.`;
+
+                            if (actionError.code === 50013) { // Discord "Missing Permissions" code
+                                errorMessage += `\n**Important :**\n1. My bot role must be placed **higher** in the server role list than the role **${guildTag}**.\n2. I need "Manage Roles" and "Manage Nicknames" permissions.`;
+                            } else {
+                                errorMessage += `\nError details: ${actionError.message}`;
+                            }
+
+                            const errorMsg = await message.reply(errorMessage);
                             messagesToDelete.push(errorMsg);
                         }
                     } else {
@@ -174,8 +192,8 @@ client.on(Events.MessageCreate, async message => {
                 console.error("Error processing image:", error);
                 const catchMsg = await message.reply('An error occurred while analyzing the image.');
                 setTimeout(async () => {
-                    try { await message.delete(); } catch (e) { }
-                    try { await catchMsg.delete(); } catch (e) { }
+                    try { await message.delete(); } catch (e) { console.error("Erreur suppression message utilisateur:", e.message); }
+                    try { await catchMsg.delete(); } catch (e) { console.error("Erreur suppression message bot:", e.message); }
                 }, 10000);
             }
         }
