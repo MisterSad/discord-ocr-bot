@@ -2,6 +2,15 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, Partials, Events } = require('discord.js');
 const Tesseract = require('tesseract.js');
 
+// ── Validation du token au démarrage ──────────────────────────────────────────
+if (!process.env.DISCORD_TOKEN) {
+    console.error('❌ DISCORD_TOKEN is missing from .env — aborting.');
+    process.exit(1);
+}
+
+// ── Anti-spam : 1 traitement actif par utilisateur à la fois ─────────────────
+const processingUsers = new Set();
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -28,10 +37,31 @@ client.on(Events.MessageCreate, async message => {
     if (message.attachments.size > 0) {
         const attachment = message.attachments.first();
 
+        // Rate-limit : ignore si l'utilisateur a déjà un traitement en cours
+        if (processingUsers.has(message.author.id)) {
+            const waitMsg = await message.reply('⏳ Please wait, your previous image is still being processed.');
+            setTimeout(async () => {
+                try { await message.delete(); } catch (e) {}
+                try { await waitMsg.delete(); } catch (e) {}
+            }, 5000);
+            return;
+        }
+
+        // Vérif taille : max 5 MB pour éviter de surcharger Tesseract
+        if (attachment.size > 5 * 1024 * 1024) {
+            const sizeMsg = await message.reply('❌ Image too large (max 5 MB). Please send a smaller screenshot.');
+            setTimeout(async () => {
+                try { await message.delete(); } catch (e) {}
+                try { await sizeMsg.delete(); } catch (e) {}
+            }, 10000);
+            return;
+        }
+
         if (attachment.contentType && attachment.contentType.startsWith('image/')) {
             console.log(`Image received from ${message.author.tag} in ${message.channel.name}`);
             const imageUrl = attachment.url;
 
+            processingUsers.add(message.author.id);
             try {
                 // Let the user know the bot is processing the image
                 const processingMsg = await message.reply('Processing image (OCR)...');
@@ -53,7 +83,7 @@ client.on(Events.MessageCreate, async message => {
                 const { data: { text } } = await Tesseract.recognize(
                     imageUrl,
                     'eng', // You can change this to 'fra' or multiple languages if needed
-                    { logger: m => console.log(m) }
+                    { logger: () => {} } // Logger désactivé en production
                 );
 
                 console.log(`[OCR Result]:\n${text}`);
@@ -80,7 +110,9 @@ client.on(Events.MessageCreate, async message => {
                 for (let i = 0; i < lines.length; i++) {
                     const match = lines[i].match(/\[([a-zA-Z0-9_-]+)\]/);
                     if (match) {
-                        guildTag = `[${match[1].trim()}]`;
+                        // Sanitisation : seulement alphanumérique + tirets, max 28 chars (+ crochets = 30)
+                        const safeInner = match[1].trim().replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 28);
+                        guildTag = `[${safeInner}]`;
                         tagLineIndex = i;
                         break;
                     }
@@ -105,7 +137,8 @@ client.on(Events.MessageCreate, async message => {
                         if (line.toUpperCase().includes('PROFILE')) continue;
 
                         if (line.length >= 3) {
-                            playerName = line;
+                            // Sanitisation : alphanumérique + espaces + tirets, max 20 chars
+                            playerName = line.replace(/[^a-zA-Z0-9 _\-]/g, '').substring(0, 20).trim();
                             break;
                         }
                     }
@@ -183,7 +216,9 @@ client.on(Events.MessageCreate, async message => {
                     }
 
                 } else {
-                    await processingMsg.edit(`❌ Text extracted, but format not recognized.\nRaw text received:\n\`\`\`text\n${text}\n\`\`\`\n\nPlease ensure the image contains the expected format.`);
+                    // Sanitisation : évite l'injection de mentions (@everyone, @here, etc.)
+                    const safeText = text.replace(/@/g, '\\@').replace(/`/g, "\\`");
+                    await processingMsg.edit(`❌ Text extracted, but format not recognized.\nRaw text received:\n\`\`\`text\n${safeText}\n\`\`\`\n\nPlease ensure the image contains the expected format.`);
                 }
 
                 scheduleCleanup();
@@ -195,6 +230,9 @@ client.on(Events.MessageCreate, async message => {
                     try { await message.delete(); } catch (e) { console.error("Erreur suppression message utilisateur:", e.message); }
                     try { await catchMsg.delete(); } catch (e) { console.error("Erreur suppression message bot:", e.message); }
                 }, 10000);
+            } finally {
+                // Libère le verrou de l'utilisateur dans tous les cas
+                processingUsers.delete(message.author.id);
             }
         }
     }
