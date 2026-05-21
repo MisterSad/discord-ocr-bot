@@ -239,7 +239,7 @@ async function applyVerification(member, guildTag, playerName, serverNumber, int
         role = await guild.roles.create({
             name: guildTag,
             color: Math.floor(Math.random() * 16777215),
-            reason: 'Créé automatiquement par le bot OCR suite à une vérification réussie',
+            reason: 'Automatically created by the OCR bot upon successful user verification',
         });
     }
 
@@ -255,7 +255,7 @@ async function applyVerification(member, guildTag, playerName, serverNumber, int
 
     // 3. Message de confirmation
     await interaction.editReply({
-        content: `🎉 **Vérification validée !**\n* Rôle attribué : **${guildTag}**\n* Pseudo défini : **${newNickname.substring(0, 32)}**`
+        content: `🎉 **Verification successful!**\n* Assigned Role: **${guildTag}**\n* Nickname Set: **${newNickname.substring(0, 32)}**`
     });
 }
 
@@ -274,7 +274,7 @@ client.on(Events.MessageCreate, async message => {
 
         // Rate-limit : ignore si l'utilisateur a déjà un traitement actif
         if (processingUsers.has(message.author.id)) {
-            const waitMsg = await message.reply('⏳ Veuillez patienter, votre image précédente est toujours en cours de traitement.');
+            const waitMsg = await message.reply('⏳ Please wait, your previous image is still being processed.');
             setTimeout(async () => {
                 try { await message.delete(); } catch (e) {}
                 try { await waitMsg.delete(); } catch (e) {}
@@ -286,13 +286,13 @@ client.on(Events.MessageCreate, async message => {
         const isImage = attachment.contentType && attachment.contentType.startsWith('image/');
         if (!isImage) return;
 
-        console.log(`📸 Image de profil reçue de ${message.author.tag}`);
+        console.log(`📸 Profile image received from ${message.author.tag}`);
         processingUsers.add(message.author.id);
 
         let processingMsg;
         try {
             // Indique que le traitement OCR a commencé
-            processingMsg = await message.reply('⏳ Analyse de l\'image en cours (OCR.space)...');
+            processingMsg = await message.reply('⏳ Processing image (OCR.space)...');
 
             // Exécution de l'OCR en ligne (gratuit et sans charge CPU locale !)
             const ocrText = await performOCRSpace(attachment.url);
@@ -316,16 +316,16 @@ client.on(Events.MessageCreate, async message => {
             // Construction de l'Embed de résultat
             const embed = new EmbedBuilder()
                 .setColor(parsedData.isGuildFound ? 0x2ecc71 : 0xe74c3c)
-                .setTitle('🔍 Résultat de l\'analyse de profil')
+                .setTitle('🔍 Profile Analysis Result')
                 .setDescription(parsedData.isGuildFound 
-                    ? `L'analyse automatique a réussi. Veuillez vérifier vos informations ci-dessous.\n\n*Cliquez sur **Confirmer** si tout est exact, ou sur **Modifier** si l'OCR a fait une faute de frappe.*`
-                    : `⚠️ **Le tag de guilde n'a pas pu être détecté automatiquement.**\n\n*Ne vous inquiétez pas ! Cliquez sur le bouton **Modifier** ci-dessous pour saisir vous-même vos informations.*`)
+                    ? `Automatic analysis succeeded. Please verify your information below.\n\n*Click on **Confirm** if everything is correct, or **Edit** if there is a typo.*`
+                    : `⚠️ **The guild tag could not be detected automatically.**\n\n*Don't worry! Click the **Edit / Complete** button below to manually enter your details.*`)
                 .addFields(
-                    { name: 'Guilde (Rôle)', value: parsedData.guildTag, inline: true },
-                    { name: 'Pseudo Joueur', value: parsedData.playerName, inline: true },
-                    { name: 'N° de Serveur', value: parsedData.serverNumber.trim() || 'Non détecté', inline: true }
+                    { name: 'Guild (Role)', value: parsedData.guildTag, inline: true },
+                    { name: 'Player Nickname', value: parsedData.playerName, inline: true },
+                    { name: 'Server Number', value: parsedData.serverNumber.trim() || 'Not detected', inline: true }
                 )
-                .setFooter({ text: `Vérification pour ${message.author.username}`, iconURL: message.author.displayAvatarURL() });
+                .setFooter({ text: `Verification for ${message.author.username}`, iconURL: message.author.displayAvatarURL() });
 
             // Ligne de boutons interactifs
             const row = new ActionRowBuilder();
@@ -334,7 +334,7 @@ client.on(Events.MessageCreate, async message => {
                 row.addComponents(
                     new ButtonBuilder()
                         .setCustomId(`confirm_${message.author.id}`)
-                        .setLabel('Confirmer')
+                        .setLabel('Confirm')
                         .setStyle(ButtonStyle.Success)
                 );
             }
@@ -342,7 +342,7 @@ client.on(Events.MessageCreate, async message => {
             row.addComponents(
                 new ButtonBuilder()
                     .setCustomId(`edit_${message.author.id}`)
-                    .setLabel('Modifier / Compléter')
+                    .setLabel('Edit / Complete')
                     .setStyle(ButtonStyle.Secondary)
             );
 
@@ -365,7 +365,7 @@ client.on(Events.MessageCreate, async message => {
 
         } catch (error) {
             console.error("Error during image processing:", error);
-            const catchMsg = await message.channel.send(`❌ Une erreur est survenue lors de l'analyse de l'image de <@${message.author.id}>. Veuillez réessayer ou contacter un administrateur.`);
+            const catchMsg = await message.channel.send(`❌ An error occurred while analyzing the image of <@${message.author.id}>. Please try again or contact an administrator.`);
             
             // Nettoyage
             try { await message.delete(); } catch (e) {}
@@ -391,7 +391,7 @@ client.on(Events.InteractionCreate, async interaction => {
         // Sécurité : Seul l'auteur de l'image peut cliquer sur ses boutons
         if (interaction.user.id !== targetUserId) {
             return await interaction.reply({
-                content: "❌ Seul l'utilisateur qui a envoyé l'image peut interagir avec ces boutons.",
+                content: "❌ Only the user who sent the image can interact with these buttons.",
                 ephemeral: true
             });
         }
@@ -399,12 +399,12 @@ client.on(Events.InteractionCreate, async interaction => {
         const data = pendingVerifications.get(targetUserId);
         if (!data) {
             return await interaction.reply({
-                content: "❌ Votre session de vérification a expiré ou est introuvable. Veuillez renvoyer votre capture d'écran.",
+                content: "❌ Your verification session has expired or was not found. Please resend your screenshot.",
                 ephemeral: true
             });
         }
 
-        // Clic sur "Confirmer"
+        // Clic sur "Confirm"
         if (action === 'confirm') {
             await interaction.deferReply({ ephemeral: true });
 
@@ -416,11 +416,11 @@ client.on(Events.InteractionCreate, async interaction => {
                 try { await interaction.message.delete(); } catch (e) {}
             } catch (err) {
                 console.error("Verification application error:", err);
-                let errMsg = "Une erreur de permission empêche le bot de modifier vos rôles ou votre pseudo.";
+                let errMsg = "A permission error prevents the bot from modifying your roles or nickname.";
                 if (err.code === 50013) {
-                    errMsg += "\n*Note pour les admins : Assurez-vous que le rôle du bot est positionné plus haut que les rôles de guilde dans les paramètres du serveur.*";
+                    errMsg += "\n*Note for admins: Ensure the bot's role is placed higher than the guild roles in your server settings.*";
                 } else {
-                    errMsg += `\nDétails : ${err.message}`;
+                    errMsg += `\nDetails: ${err.message}`;
                 }
                 await interaction.editReply({ content: `❌ ${errMsg}` });
             }
@@ -431,11 +431,11 @@ client.on(Events.InteractionCreate, async interaction => {
             // Construction du Modal (Formulaire contextuel)
             const modal = new ModalBuilder()
                 .setCustomId(`modal_${targetUserId}`)
-                .setTitle('Corriger vos informations');
+                .setTitle('Correct your information');
 
             const guildInput = new TextInputBuilder()
                 .setCustomId('guild_tag')
-                .setLabel('TAG DE GUILDE (ex: GE)')
+                .setLabel('GUILD TAG (e.g., GE)')
                 .setStyle(TextInputStyle.Short)
                 .setValue(data.guildTag.replace(/[\[\]]/g, '')) // Pré-remplit sans les crochets
                 .setMinLength(2)
@@ -445,17 +445,17 @@ client.on(Events.InteractionCreate, async interaction => {
 
             const nameInput = new TextInputBuilder()
                 .setCustomId('player_name')
-                .setLabel('PSEUDO DANS LE JEU')
+                .setLabel('IN-GAME NICKNAME')
                 .setStyle(TextInputStyle.Short)
                 .setValue(data.playerName === 'NomInconnu' ? '' : data.playerName)
                 .setMinLength(3)
                 .setMaxLength(20)
-                .setPlaceholder('Votre pseudo exact')
+                .setPlaceholder('Your exact nickname')
                 .setRequired(true);
 
             const serverInput = new TextInputBuilder()
                 .setCustomId('server_number')
-                .setLabel('NUMÉRO DE SERVEUR (ex: 1061)')
+                .setLabel('SERVER NUMBER (e.g., 1061)')
                 .setStyle(TextInputStyle.Short)
                 .setValue(data.serverNumber.replace(/#/g, '').trim())
                 .setMinLength(1)
@@ -481,7 +481,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (prefix === 'modal') {
             if (interaction.user.id !== targetUserId) {
                 return await interaction.reply({
-                    content: "❌ Action non autorisée.",
+                    content: "❌ Unauthorized action.",
                     ephemeral: true
                 });
             }
@@ -505,11 +505,11 @@ client.on(Events.InteractionCreate, async interaction => {
                 try { await interaction.message.delete(); } catch (e) {}
             } catch (err) {
                 console.error("Verification application error from modal:", err);
-                let errMsg = "Une erreur de permission empêche le bot de modifier vos rôles ou votre pseudo.";
+                let errMsg = "A permission error prevents the bot from modifying your roles or nickname.";
                 if (err.code === 50013) {
-                    errMsg += "\n*Note pour les admins : Le rôle du bot doit être placé plus haut dans la liste des rôles.*";
+                    errMsg += "\n*Note for admins: The bot's role must be placed higher in the role list.*";
                 } else {
-                    errMsg += `\nDétails : ${err.message}`;
+                    errMsg += `\nDetails: ${err.message}`;
                 }
                 await interaction.editReply({ content: `❌ ${errMsg}` });
             }
