@@ -74,6 +74,7 @@ async function performOCRSpace(imageUrl) {
         formData.append('isOverlayRequired', 'false');
         formData.append('detectOrientation', 'true');
         formData.append('scale', 'true'); // Agrandit l'image en interne pour une meilleure précision
+        formData.append('OCREngine', '2'); // Utilise le moteur 2 d'OCR.space (bien plus précis pour les chiffres, crochets et polices de jeu)
 
         const response = await axios.post('https://api.ocr.space/parse/image', formData, {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
@@ -119,71 +120,107 @@ function cleanName(line) {
  */
 function parseOCRText(text) {
     const lines = text.split('\n').map(l => l.trim()).filter(line => line !== '');
-    console.log(`[Raw Text split by lines]:`, lines);
+    console.log(`[OCR.space Lines]:`, lines);
 
     let guildTag = "[GuildeInconnue]";
     let playerName = "NomInconnu";
     let serverNumber = "";
-    let tagLineIndex = -1;
-
-    // 1. Détection du tag de guilde (ex: [GE] ou (GE) ou lGE| ou |GE| ou lGEJ)
-    // Cherche un tag de 2 à 6 caractères alphanumériques entouré de crochets dégradés
+    
+    // 1. Trouver la ligne du serveur (notre ancre la plus stable)
+    let serverLineIndex = -1;
     for (let i = 0; i < lines.length; i++) {
-        const match = lines[i].match(/(?:\[|\(|\{|\(|\||l|I|1|\\|\/)\s*([a-zA-Z0-9_-]{2,6})\s*(?:\]|\)|\}|\)|\||l|I|1|\\|\/)/);
-        if (match) {
-            const safeInner = match[1].trim().replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 28);
-            guildTag = `[${safeInner.toUpperCase()}]`;
-            tagLineIndex = i;
+        const serverMatch = lines[i].match(/(?:#|No|No\.|N°|S|H|h)\s*([0-9oO]{3,5})/i);
+        if (serverMatch) {
+            const cleanDigits = serverMatch[1].replace(/[oO]/g, '0');
+            serverNumber = ` #${cleanDigits}`;
+            serverLineIndex = i;
             break;
         }
     }
 
-    // 2. Détection du pseudo du joueur
-    // Si le tag est trouvé, on cherche le pseudo sur les lignes précédentes
-    if (tagLineIndex > 0) {
-        for (let i = tagLineIndex - 1; i >= 0; i--) {
-            let line = lines[i];
-            
-            // Le mot "PROFILE" ou "COMMANDER" tout en haut ne doit pas être pris comme nom
-            if (line.toUpperCase().includes('PROFILE') || line.toUpperCase().includes('COMMANDER')) continue;
+    // Heuristique A : Basée sur l'ancre du Serveur (Ordre vertical fixe)
+    if (serverLineIndex !== -1) {
+        console.log(`[Heuristic A] Server found at line ${serverLineIndex}: "${lines[serverLineIndex]}"`);
+        
+        // La ligne juste au-dessus du serveur est l'Alliance/Guilde
+        if (serverLineIndex - 1 >= 0) {
+            const allianceLine = lines[serverLineIndex - 1];
+            // Cherche d'abord s'il y a un tag entre crochets (même dégradés)
+            const tagMatch = allianceLine.match(/(?:\[|\(|\{|\(|\||l|I|1|\\|\/)\s*([a-zA-Z0-9_-]{2,6})\s*(?:\]|\)|\}|\)|\||l|I|1|\\|\/)/);
+            if (tagMatch) {
+                guildTag = `[${tagMatch[1].trim().toUpperCase()}]`;
+            } else {
+                // Si pas de crochets, on prend le premier mot (ex: "RADJ The_Radiant" -> "RADJ")
+                const firstWord = allianceLine.split(/\s+/)[0].replace(/[^a-zA-Z0-9_-]/g, '');
+                if (firstWord.length >= 2 && firstWord.length <= 6) {
+                    guildTag = `[${firstWord.toUpperCase()}]`;
+                }
+            }
+        }
 
-            line = cleanName(line);
-            if (line.length >= 3) {
-                playerName = line;
+        // La ligne encore au-dessus (ou celle d'avant si vide/invalide) est le Pseudo
+        for (let i = serverLineIndex - 2; i >= 0; i--) {
+            let potentialName = lines[i];
+            if (potentialName.toUpperCase().includes('PROFILE') || potentialName.toUpperCase().includes('COMMANDER')) continue;
+            
+            potentialName = cleanName(potentialName);
+            if (potentialName.length >= 3) {
+                playerName = potentialName;
                 break;
             }
         }
     }
 
-    // Cas de secours : pseudo et tag sur la même ligne (ex: "John [GE]" ou "[GE] John")
-    if (playerName === "NomInconnu" && tagLineIndex !== -1) {
-        const line = lines[tagLineIndex];
-        // Avant le tag
-        const matchBefore = line.match(/^([a-zA-Z0-9_-]{3,20})\s*(?:\[|\(|\{|\(|\||l|I|1|\\|\/)/);
-        if (matchBefore) {
-            playerName = cleanName(matchBefore[1]);
-        } else {
-            // Après le tag
-            const matchAfter = line.match(/(?:\]|\)|\}|\)|\||l|I|1|\\|\/)\s*([a-zA-Z0-9_-]{3,20})/);
-            if (matchAfter) {
-                playerName = cleanName(matchAfter[1]);
+    // Heuristique B (Fallback) : Si l'ancre du serveur a échoué mais qu'on a des crochets
+    if (guildTag === "[GuildeInconnue]" || playerName === "NomInconnu") {
+        console.log(`[Heuristic B] Fallback to bracket-based search...`);
+        let tagLineIndex = -1;
+        
+        // Détection du tag de guilde par crochets
+        for (let i = 0; i < lines.length; i++) {
+            const match = lines[i].match(/(?:\[|\(|\{|\(|\||l|I|1|\\|\/)\s*([a-zA-Z0-9_-]{2,6})\s*(?:\]|\)|\}|\)|\||l|I|1|\\|\/)/);
+            if (match) {
+                guildTag = `[${match[1].trim().toUpperCase()}]`;
+                tagLineIndex = i;
+                break;
             }
         }
-    }
 
-    // 3. Détection du numéro de serveur (ex: #1061, H1061, S1061...)
-    // Corrige le cas où le '0' est lu comme 'O' ou 'o' par l'OCR
-    const serverMatch = text.match(/(?:#|No|No\.|N°|S|H|h)\s*([0-9oO]{3,5})/i);
-    if (serverMatch) {
-        const cleanDigits = serverMatch[1].replace(/[oO]/g, '0');
-        serverNumber = ` #${cleanDigits}`;
+        if (tagLineIndex !== -1) {
+            // Cherche le nom du joueur avant la ligne du tag
+            if (playerName === "NomInconnu" && tagLineIndex > 0) {
+                for (let i = tagLineIndex - 1; i >= 0; i--) {
+                    let line = lines[i];
+                    if (line.toUpperCase().includes('PROFILE') || line.toUpperCase().includes('COMMANDER')) continue;
+                    line = cleanName(line);
+                    if (line.length >= 3) {
+                        playerName = line;
+                        break;
+                    }
+                }
+            }
+
+            // Cas de secours sur la même ligne
+            if (playerName === "NomInconnu") {
+                const line = lines[tagLineIndex];
+                const matchBefore = line.match(/^([a-zA-Z0-9_-]{3,20})\s*(?:\[|\(|\{|\(|\||l|I|1|\\|\/)/);
+                if (matchBefore) {
+                    playerName = cleanName(matchBefore[1]);
+                } else {
+                    const matchAfter = line.match(/(?:\]|\)|\}|\)|\||l|I|1|\\|\/)\s*([a-zA-Z0-9_-]{3,20})/);
+                    if (matchAfter) {
+                        playerName = cleanName(matchAfter[1]);
+                    }
+                }
+            }
+        }
     }
 
     return {
         guildTag,
         playerName,
         serverNumber,
-        isGuildFound: tagLineIndex !== -1
+        isGuildFound: guildTag !== "[GuildeInconnue]"
     };
 }
 
