@@ -74,8 +74,13 @@ const client = new Client({
     partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
-client.once(Events.ClientReady, c => {
+client.once(Events.ClientReady, async c => {
     console.log(`✅ Ready! Logged in as ${c.user.tag}`);
+    try {
+        await processOldMessages(c);
+    } catch (err) {
+        console.error("Error during startup catch-up:", err);
+    }
 });
 
 // ── Fonctions Utilitaires OCR & Parsing ──────────────────────────────────────
@@ -343,6 +348,173 @@ async function applyVerification(member, guildTag, playerName, serverNumber, int
     });
 }
 
+// ── Fonctions de Traitement de Messages & Catch-up ───────────────────────────
+
+/**
+ * Parcourt les salons de vérification pour traiter les messages en attente (catch-up)
+ */
+async function processOldMessages(client) {
+    console.log("🔍 Checking for unprocessed screenshots in the verification channel...");
+    for (const guild of client.guilds.cache.values()) {
+        const channel = guild.channels.cache.find(ch => ch.name === VERIFICATION_CHANNEL_NAME && ch.isTextBased());
+        if (!channel) continue;
+
+        try {
+            // Récupère les 100 derniers messages
+            const messages = await channel.messages.fetch({ limit: 100 });
+            
+            // Filtre pour garder les captures d'écran non traitées
+            const unprocessed = messages.filter(msg => {
+                if (msg.author.bot) return false;
+                return msg.attachments.some(att => att.contentType && att.contentType.startsWith('image/'));
+            });
+
+            if (unprocessed.size > 0) {
+                console.log(`[Catch-up] Found ${unprocessed.size} unprocessed messages in '${VERIFICATION_CHANNEL_NAME}' (${guild.name})`);
+                
+                // Traitement dans l'ordre chronologique (du plus ancien au plus récent)
+                const sorted = Array.from(unprocessed.values()).reverse();
+                for (const msg of sorted) {
+                    try {
+                        await handleScreenshotMessage(msg);
+                    } catch (err) {
+                        console.error(`Failed to process message ${msg.id} during catch-up:`, err);
+                    }
+                }
+            } else {
+                console.log(`[Catch-up] No unprocessed messages in '${VERIFICATION_CHANNEL_NAME}' (${guild.name})`);
+            }
+        } catch (error) {
+            console.error(`Failed to fetch messages for guild ${guild.name}:`, error);
+        }
+    }
+}
+
+/**
+ * Traite une image de capture d'écran reçue (OCR + Embed de validation)
+ */
+async function handleScreenshotMessage(message) {
+    const attachment = message.attachments.first();
+    if (!attachment) return;
+
+    // Rate-limit : ignore si l'utilisateur a déjà un traitement actif
+    if (processingUsers.has(message.author.id)) {
+        const waitMsg = await message.reply('⏳ Please wait, your previous image is still being processed.');
+        setTimeout(async () => {
+            try { await message.delete(); } catch (e) {}
+            try { await waitMsg.delete(); } catch (e) {}
+        }, 5000);
+        return;
+    }
+
+    // Vérif format d'image
+    const isImage = attachment.contentType && attachment.contentType.startsWith('image/');
+    if (!isImage) return;
+
+    console.log(`📸 Profile image received/extracted from ${message.author.tag}`);
+    processingUsers.add(message.author.id);
+
+    let processingMsg;
+    try {
+        // Indique que le traitement OCR a commencé
+        processingMsg = await message.reply('⏳ Processing image (OCR.space)...');
+
+        // Exécution de l'OCR en ligne (gratuit et sans charge CPU locale !)
+        const ocrText = await performOCRSpace(attachment.url);
+        console.log(`[OCR Result text]:\n${ocrText}`);
+
+        // Analyse et extraction des informations
+        const parsedData = parseOCRText(ocrText);
+        
+        // Enregistrement de la session utilisateur en mémoire
+        pendingVerifications.set(message.author.id, {
+            guildTag: parsedData.guildTag,
+            playerName: parsedData.playerName,
+            serverNumber: parsedData.serverNumber.trim()
+        });
+
+        // Supprimer IMMÉDIATEMENT le message d'origine et le message temporaire
+        // (L'image a déjà été traitée, on nettoie pour garder le salon propre)
+        try { await message.delete(); } catch (e) {}
+        try { await processingMsg.delete(); } catch (e) {}
+
+        const finalGuild = normalizeGuildTag(parsedData.guildTag);
+        let displayGuild = finalGuild;
+        if (finalGuild === '[VISITOR]') {
+            if (parsedData.guildTag !== '[GuildeInconnue]' && parsedData.guildTag.toUpperCase() !== '[VISITOR]') {
+                displayGuild = `[VISITOR] (Detected: ${parsedData.guildTag})`;
+            } else if (parsedData.guildTag === '[GuildeInconnue]') {
+                displayGuild = `[VISITOR] (Not detected)`;
+            }
+        }
+
+        // Construction de l'Embed de résultat
+        const embed = new EmbedBuilder()
+            .setColor(parsedData.isGuildFound ? 0x2ecc71 : 0xe74c3c)
+            .setTitle('🔍 Profile Analysis Result')
+            .setDescription(parsedData.isGuildFound 
+                ? `Automatic analysis succeeded. Please verify your information below.\n\n*Click on **Confirm** if everything is correct, or **Edit** if there is a typo.*`
+                : `⚠️ **The guild tag could not be detected automatically.**\n\n*Don't worry! Click the **Edit / Complete** button below to manually enter your details.*`)
+            .addFields(
+                { name: 'Guild (Role)', value: displayGuild, inline: true },
+                { name: 'Player Nickname', value: parsedData.playerName, inline: true },
+                { name: 'Server Number', value: parsedData.serverNumber.trim() || 'Not detected', inline: true }
+            )
+            .setFooter({ text: `Verification for ${message.author.username}`, iconURL: message.author.displayAvatarURL() });
+
+        // Ligne de boutons interactifs
+        const row = new ActionRowBuilder();
+
+        if (parsedData.isGuildFound) {
+            row.addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`confirm_${message.author.id}`)
+                    .setLabel('Confirm')
+                    .setStyle(ButtonStyle.Success)
+            );
+        }
+
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`edit_${message.author.id}`)
+                .setLabel('Edit / Complete')
+                .setStyle(ButtonStyle.Secondary)
+        );
+
+        // Envoi de la fiche interactive dans le salon de vérification
+        const responseMsg = await message.channel.send({
+            content: `<@${message.author.id}>`,
+            embeds: [embed],
+            components: [row]
+        });
+
+        // Auto-destruction après 3 minutes d'inactivité pour éviter de polluer le salon
+        setTimeout(async () => {
+            if (pendingVerifications.has(message.author.id)) {
+                pendingVerifications.delete(message.author.id);
+                try {
+                    await responseMsg.delete();
+                } catch (e) {}
+            }
+        }, 180000); // 3 minutes
+
+    } catch (error) {
+        console.error("Error during image processing:", error);
+        const catchMsg = await message.channel.send(`❌ An error occurred while analyzing the image of <@${message.author.id}>. Please try again or contact an administrator.`);
+        
+        // Nettoyage
+        try { await message.delete(); } catch (e) {}
+        if (processingMsg) { try { await processingMsg.delete(); } catch (e) {} }
+
+        setTimeout(async () => {
+            try { await catchMsg.delete(); } catch (e) {}
+        }, 10000);
+    } finally {
+        // Libère le verrou anti-spam
+        processingUsers.delete(message.author.id);
+    }
+}
+
 // ── Gestionnaire de messages (Détection d'images) ───────────────────────────
 
 client.on(Events.MessageCreate, async message => {
@@ -354,124 +526,7 @@ client.on(Events.MessageCreate, async message => {
 
     // Vérifie s'il y a une capture d'écran
     if (message.attachments.size > 0) {
-        const attachment = message.attachments.first();
-
-        // Rate-limit : ignore si l'utilisateur a déjà un traitement actif
-        if (processingUsers.has(message.author.id)) {
-            const waitMsg = await message.reply('⏳ Please wait, your previous image is still being processed.');
-            setTimeout(async () => {
-                try { await message.delete(); } catch (e) {}
-                try { await waitMsg.delete(); } catch (e) {}
-            }, 5000);
-            return;
-        }
-
-        // Vérif format d'image
-        const isImage = attachment.contentType && attachment.contentType.startsWith('image/');
-        if (!isImage) return;
-
-        console.log(`📸 Profile image received from ${message.author.tag}`);
-        processingUsers.add(message.author.id);
-
-        let processingMsg;
-        try {
-            // Indique que le traitement OCR a commencé
-            processingMsg = await message.reply('⏳ Processing image (OCR.space)...');
-
-            // Exécution de l'OCR en ligne (gratuit et sans charge CPU locale !)
-            const ocrText = await performOCRSpace(attachment.url);
-            console.log(`[OCR Result text]:\n${ocrText}`);
-
-            // Analyse et extraction des informations
-            const parsedData = parseOCRText(ocrText);
-            
-            // Enregistrement de la session utilisateur en mémoire
-            pendingVerifications.set(message.author.id, {
-                guildTag: parsedData.guildTag,
-                playerName: parsedData.playerName,
-                serverNumber: parsedData.serverNumber.trim()
-            });
-
-            // Supprimer IMMÉDIATEMENT le message d'origine et le message temporaire
-            // (L'image a déjà été traitée, on nettoie pour garder le salon propre)
-            try { await message.delete(); } catch (e) {}
-            try { await processingMsg.delete(); } catch (e) {}
-
-            const finalGuild = normalizeGuildTag(parsedData.guildTag);
-            let displayGuild = finalGuild;
-            if (finalGuild === '[VISITOR]') {
-                if (parsedData.guildTag !== '[GuildeInconnue]' && parsedData.guildTag.toUpperCase() !== '[VISITOR]') {
-                    displayGuild = `[VISITOR] (Detected: ${parsedData.guildTag})`;
-                } else if (parsedData.guildTag === '[GuildeInconnue]') {
-                    displayGuild = `[VISITOR] (Not detected)`;
-                }
-            }
-
-            // Construction de l'Embed de résultat
-            const embed = new EmbedBuilder()
-                .setColor(parsedData.isGuildFound ? 0x2ecc71 : 0xe74c3c)
-                .setTitle('🔍 Profile Analysis Result')
-                .setDescription(parsedData.isGuildFound 
-                    ? `Automatic analysis succeeded. Please verify your information below.\n\n*Click on **Confirm** if everything is correct, or **Edit** if there is a typo.*`
-                    : `⚠️ **The guild tag could not be detected automatically.**\n\n*Don't worry! Click the **Edit / Complete** button below to manually enter your details.*`)
-                .addFields(
-                    { name: 'Guild (Role)', value: displayGuild, inline: true },
-                    { name: 'Player Nickname', value: parsedData.playerName, inline: true },
-                    { name: 'Server Number', value: parsedData.serverNumber.trim() || 'Not detected', inline: true }
-                )
-                .setFooter({ text: `Verification for ${message.author.username}`, iconURL: message.author.displayAvatarURL() });
-
-            // Ligne de boutons interactifs
-            const row = new ActionRowBuilder();
-
-            if (parsedData.isGuildFound) {
-                row.addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`confirm_${message.author.id}`)
-                        .setLabel('Confirm')
-                        .setStyle(ButtonStyle.Success)
-                );
-            }
-
-            row.addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`edit_${message.author.id}`)
-                    .setLabel('Edit / Complete')
-                    .setStyle(ButtonStyle.Secondary)
-            );
-
-            // Envoi de la fiche interactive dans le salon de vérification
-            const responseMsg = await message.channel.send({
-                content: `<@${message.author.id}>`,
-                embeds: [embed],
-                components: [row]
-            });
-
-            // Auto-destruction après 3 minutes d'inactivité pour éviter de polluer le salon
-            setTimeout(async () => {
-                if (pendingVerifications.has(message.author.id)) {
-                    pendingVerifications.delete(message.author.id);
-                    try {
-                        await responseMsg.delete();
-                    } catch (e) {}
-                }
-            }, 180000); // 3 minutes
-
-        } catch (error) {
-            console.error("Error during image processing:", error);
-            const catchMsg = await message.channel.send(`❌ An error occurred while analyzing the image of <@${message.author.id}>. Please try again or contact an administrator.`);
-            
-            // Nettoyage
-            try { await message.delete(); } catch (e) {}
-            if (processingMsg) { try { await processingMsg.delete(); } catch (e) {} }
-
-            setTimeout(async () => {
-                try { await catchMsg.delete(); } catch (e) {}
-            }, 10000);
-        } finally {
-            // Libère le verrou anti-spam
-            processingUsers.delete(message.author.id);
-        }
+        await handleScreenshotMessage(message);
     }
 });
 
