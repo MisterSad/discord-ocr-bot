@@ -39,6 +39,24 @@ app.listen(PORT, () => {
     console.log(`📡 Keep-alive server running on port ${PORT}`);
 });
 
+// ── Configuration des Guildes et Rôles ───────────────────────────────────────
+const ALLOWED_GUILDS = ['PR1M', 'OMG', 'IMK'];
+
+/**
+ * Normalise le tag de guilde. S'il n'est pas dans la liste des guildes autorisées,
+ * retourne '[VISITOR]'. Sinon, retourne le tag normalisé sous la forme '[TAG]'.
+ */
+function normalizeGuildTag(tag) {
+    if (!tag || tag === '[GuildeInconnue]') {
+        return '[VISITOR]';
+    }
+    const clean = tag.replace(/[\[\]]/g, '').trim().toUpperCase();
+    if (ALLOWED_GUILDS.includes(clean)) {
+        return `[${clean}]`;
+    }
+    return '[VISITOR]';
+}
+
 // ── Gestion de l'état en mémoire ─────────────────────────────────────────────
 // Anti-spam : 1 traitement actif par utilisateur à la fois
 const processingUsers = new Set();
@@ -294,15 +312,16 @@ function parseOCRText(text) {
  */
 async function applyVerification(member, guildTag, playerName, serverNumber, interaction) {
     const guild = member.guild;
+    const finalGuildTag = normalizeGuildTag(guildTag);
 
     // 1. Gestion du rôle de guilde
     await guild.roles.fetch();
-    let role = guild.roles.cache.find(r => r.name.toLowerCase() === guildTag.toLowerCase());
+    let role = guild.roles.cache.find(r => r.name.toLowerCase() === finalGuildTag.toLowerCase());
 
     if (!role) {
         // Crée le rôle si inexistant (avec une couleur aléatoire)
         role = await guild.roles.create({
-            name: guildTag,
+            name: finalGuildTag,
             color: Math.floor(Math.random() * 16777215),
             reason: 'Automatically created by the OCR bot upon successful user verification',
         });
@@ -313,14 +332,14 @@ async function applyVerification(member, guildTag, playerName, serverNumber, int
 
     // 2. Renommer le membre : [GUILDE] Pseudo #Serveur
     const finalServer = serverNumber ? `${serverNumber}` : "";
-    const newNickname = `${guildTag} ${playerName}${finalServer}`;
+    const newNickname = `${finalGuildTag} ${playerName}${finalServer}`;
 
     // Discord limite le pseudo à 32 caractères
     await member.setNickname(newNickname.substring(0, 32));
 
     // 3. Message de confirmation
     await interaction.editReply({
-        content: `🎉 **Verification successful!**\n* Assigned Role: **${guildTag}**\n* Nickname Set: **${newNickname.substring(0, 32)}**`
+        content: `🎉 **Verification successful!**\n* Assigned Role: **${finalGuildTag}**\n* Nickname Set: **${newNickname.substring(0, 32)}**`
     });
 }
 
@@ -378,6 +397,16 @@ client.on(Events.MessageCreate, async message => {
             try { await message.delete(); } catch (e) {}
             try { await processingMsg.delete(); } catch (e) {}
 
+            const finalGuild = normalizeGuildTag(parsedData.guildTag);
+            let displayGuild = finalGuild;
+            if (finalGuild === '[VISITOR]') {
+                if (parsedData.guildTag !== '[GuildeInconnue]' && parsedData.guildTag.toUpperCase() !== '[VISITOR]') {
+                    displayGuild = `[VISITOR] (Detected: ${parsedData.guildTag})`;
+                } else if (parsedData.guildTag === '[GuildeInconnue]') {
+                    displayGuild = `[VISITOR] (Not detected)`;
+                }
+            }
+
             // Construction de l'Embed de résultat
             const embed = new EmbedBuilder()
                 .setColor(parsedData.isGuildFound ? 0x2ecc71 : 0xe74c3c)
@@ -386,7 +415,7 @@ client.on(Events.MessageCreate, async message => {
                     ? `Automatic analysis succeeded. Please verify your information below.\n\n*Click on **Confirm** if everything is correct, or **Edit** if there is a typo.*`
                     : `⚠️ **The guild tag could not be detected automatically.**\n\n*Don't worry! Click the **Edit / Complete** button below to manually enter your details.*`)
                 .addFields(
-                    { name: 'Guild (Role)', value: parsedData.guildTag, inline: true },
+                    { name: 'Guild (Role)', value: displayGuild, inline: true },
                     { name: 'Player Nickname', value: parsedData.playerName, inline: true },
                     { name: 'Server Number', value: parsedData.serverNumber.trim() || 'Not detected', inline: true }
                 )
@@ -498,11 +527,15 @@ client.on(Events.InteractionCreate, async interaction => {
                 .setCustomId(`modal_${targetUserId}`)
                 .setTitle('Correct your information');
 
+            const prefillGuild = (data.guildTag === '[GuildeInconnue]' || !data.guildTag) 
+                ? '' 
+                : data.guildTag.replace(/[\[\]]/g, '');
+
             const guildInput = new TextInputBuilder()
                 .setCustomId('guild_tag')
                 .setLabel('GUILD TAG (e.g., GE)')
                 .setStyle(TextInputStyle.Short)
-                .setValue(data.guildTag.replace(/[\[\]]/g, '')) // Pré-remplit sans les crochets
+                .setValue(prefillGuild) // Pré-remplit sans les crochets ou vide
                 .setMinLength(2)
                 .setMaxLength(10)
                 .setPlaceholder('GE')
