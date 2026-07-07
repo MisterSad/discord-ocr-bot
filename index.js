@@ -162,6 +162,53 @@ function isNoiseLine(line) {
     return false;
 }
 
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function detectAllowedGuild(text) {
+    const upper = text.toUpperCase();
+    
+    const checkPattern = (regexPattern, guildName) => {
+        const match = upper.match(regexPattern);
+        if (!match) return null;
+        
+        const matchIndex = match.index;
+        const matchedStr = match[0];
+        
+        if (matchIndex > 0) {
+            const charBefore = upper[matchIndex - 1];
+            if (/[a-zA-Z0-9]/.test(charBefore) && !/[1LI|]/.test(charBefore)) {
+                return null;
+            }
+        }
+        
+        const nextIndex = matchIndex + matchedStr.length;
+        if (nextIndex < upper.length) {
+            const charAfter = upper[nextIndex];
+            if (/[a-zA-Z0-9]/.test(charAfter) && !/[1LI|]/.test(charAfter)) {
+                return null;
+            }
+        }
+        
+        return { guild: guildName, matchedStr };
+    };
+
+    // PR1M patterns
+    let res = checkPattern(/P\s*R\s*[1LI|]\s*M/i, 'PR1M');
+    if (res) return res;
+    
+    // OMG patterns
+    res = checkPattern(/[O0]\s*M\s*G/i, 'OMG');
+    if (res) return res;
+    
+    // IMK patterns
+    res = checkPattern(/[1LI|]\s*M\s*K/i, 'IMK');
+    if (res) return res;
+    
+    return null;
+}
+
 /**
  * Parse le texte brut extrait par l'OCR avec des regex ultra-résilientes
  */
@@ -205,20 +252,33 @@ function parseOCRText(text) {
         let score = 0;
         let extractedTag = "";
         
-        // Recherche d'un tag entre crochets (même dégradés)
-        const bracketMatch = cand.text.match(/(?:\[|\(|\{|\(|\||l|I|1|\\|\/)\s*([a-zA-Z0-9_-]{2,6})\s*(?:\]|\)|\}|\)|\||l|I|1|\\|\/)/);
+        // Tenter de détecter directement une de nos guildes autorisées de manière robuste
+        const detected = detectAllowedGuild(cand.text);
         
-        if (bracketMatch) {
-            extractedTag = bracketMatch[1].trim().toUpperCase();
-            // Si la ligne contient du texte après le tag, c'est un excellent candidat d'alliance
-            // Ex: "[RAD] The_Radiant" vs juste un badge égaré "[544]"
-            const remainingText = cand.text.replace(bracketMatch[0], '').trim();
-            if (remainingText.length >= 2) {
-                score = 10;
+        if (detected) {
+            extractedTag = detected.guild;
+            const remainingText = cand.text.replace(new RegExp(escapeRegExp(detected.matchedStr), 'i'), '').trim();
+            const cleanRemaining = remainingText.replace(/[\s\[\](){}|\\\/1lI]/g, '');
+            if (cleanRemaining.length >= 2) {
+                score = 12;
             } else {
-                score = 3;
+                score = 10;
             }
         } else {
+            // Recherche d'un tag entre crochets (même dégradés)
+            const bracketMatch = cand.text.match(/(?:\[|\(|\{|\(|\||l|I|1|\\|\/)\s*([a-zA-Z0-9_-]{2,6})\s*(?:\]|\)|\}|\)|\||l|I|1|\\|\/)/);
+            
+            if (bracketMatch) {
+                extractedTag = bracketMatch[1].trim().toUpperCase();
+                // Si la ligne contient du texte après le tag, c'est un excellent candidat d'alliance
+                // Ex: "[RAD] The_Radiant" vs juste un badge égaré "[544]"
+                const remainingText = cand.text.replace(bracketMatch[0], '').trim();
+                if (remainingText.length >= 2) {
+                    score = 10;
+                } else {
+                    score = 3;
+                }
+            } else {
             // Sans crochets, cherche si la ligne commence par un mot court (tag) suivi du nom
             // Ex: "RAD The_Radiant"
             const firstWordMatch = cand.text.match(/^([a-zA-Z0-9_-]{2,6})\s+([a-zA-Z0-9_-]+)/);
@@ -233,6 +293,7 @@ function parseOCRText(text) {
                     score = 1;
                 }
             }
+        }
         }
 
         // Pénaliser légèrement les tags purement numériques (ex: 544 issu d'une erreur d'OCR sur un logo)
